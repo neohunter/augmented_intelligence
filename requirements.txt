@@ -1,0 +1,11 @@
+websockets
+openai
+requests
+Pillow
+wordcloud
+matplotlib
+pyaudio
+assemblyai
+PyYAML
+pillow
+keyboard
