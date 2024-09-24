@@ -9,7 +9,7 @@ from utils import load_config
 
 def main():
     config = load_config()
-    print("Starting real-time transcription...")
+    print("Starting real-time transcription...\r\n")
 
     transcriber = Transcriber(config)
     processor = Processor(config)
