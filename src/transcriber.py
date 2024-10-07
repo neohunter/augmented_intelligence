@@ -16,6 +16,7 @@ import re
 class Transcriber:
 
     def __init__(self, config):
+        self.config = config
         self.api_key = config['assemblyai']['api_key']
         assemblyai.settings.api_key = self.api_key
 
@@ -35,6 +36,7 @@ class Transcriber:
 
         self.last_length = 0
         self.last_lines_used = 0  # Track how many lines the last partial transcript used
+        self.last_start_time_transcript = ""  # To store the starting point of the last section
 
         self.client = assemblyai.RealtimeTranscriber(
             sample_rate=16_000,
@@ -88,7 +90,7 @@ class Transcriber:
             self.save_transcript_to_file(text_to_print)
 
             # print("Confidence: ", transcript.confidence)
-            # self.query_processor()
+            self.query_processor()
             # print("\r\n-------------------------------------------------\r\n")
         elif isinstance(transcript, assemblyai.RealtimePartialTranscript):
             # Partial transcript
@@ -111,16 +113,74 @@ class Transcriber:
         print("Closing Session")
 
     def query_processor(self):
-        """Processes the accumulated conversation using GPT."""
+        """Processes the accumulated conversation using GPT and updates the current section."""
         if self.processor:
-            gpt_response = self.processor.process_transcription(self.global_conversation)
-            print(gpt_response)
+            # Get the transcript since the last section's start time
+            transcript_since_last_section = self.get_transcript_since_last_start_time()
 
+            # Call GPT with only the relevant portion of the transcript
+            gpt_response = self.processor.process_transcription(transcript_since_last_section)
+            print(gpt_response + "\r\n\r\n")
+
+            # Extract and format the current topic from the GPT response
             if not self.current_topic:
                 topic = self.extract_and_format_topic(gpt_response)
                 if topic:
                     print(f"Identified Topic: {topic}")
                     self.update_topic(topic)
+
+            # WIP attempt to receive response as json to create a UI.
+            # Update the current section with the new GPT data (concepts, questions, etc.)
+            if self.config['general_settings']['use_json_response']:
+                self.update_current_section(gpt_response)
+
+
+    def get_transcript_since_last_start_time(self):
+        """Return the transcript text from the last section's start time."""
+        if not self.start_time:
+            # If no start time, return the full conversation
+            return self.global_conversation
+        else:
+            # Get the transcript since the last section's start time
+            last_start_time_pos = self.global_conversation.find(self.last_start_time_transcript)
+            return self.global_conversation[last_start_time_pos:]
+
+    def update_current_section(self, gpt_response):
+        """Update the current section with the latest GPT response data."""
+        # Parse GPT response for key concepts, questions, etc.
+        section_data = self.parse_gpt_response(gpt_response)
+
+        # Update the current section of the conversation
+        self.conversation["current_section"].update({
+            "topic": section_data.get("topic", ""),
+            "transcript": self.get_transcript_since_last_start_time(),
+            "key_concepts": section_data.get("key_concepts", []),
+            "questions": section_data.get("questions", []),
+            "follow_up_questions": section_data.get("follow_up_questions", []),
+            "keywords": section_data.get("keywords", [])
+        })
+
+
+    def complete_current_section(self):
+        """Move the current section to previous_sections and start a new section."""
+        # Mark the end time of the current section
+        self.conversation["current_section"]["end_time"] = self.get_current_time()
+
+        # Move the current section to previous_sections
+        self.conversation["previous_sections"].append(self.conversation["current_section"])
+
+        # Start a new section
+        self.conversation["current_section"] = {
+            "section_id": len(self.conversation["previous_sections"]) + 1,
+            "topic": "",
+            "transcript": "",
+            "start_time": self.get_current_time(),
+            "end_time": None,
+            "key_concepts": [],
+            "questions": [],
+            "follow_up_questions": [],
+            "keywords": []
+        }
 
     def clear_last_lines(self, lines_to_clear):
         """Clears the last printed lines in the terminal."""
@@ -140,15 +200,6 @@ class Transcriber:
         """Calculates the number of lines the text would occupy in the terminal."""
         return (len(text) // terminal_width) + 1
 
-    def update_topic(self, new_topic):
-        """Updates the conversation topic and renames the log file."""
-        self.current_topic = new_topic
-        date_str = time.strftime("%Y-%m-%d")
-        new_filename = f"transcripts/{date_str}_{self.current_topic}.log"
-        os.rename(self.temp_file, new_filename)
-        self.conversation_file = new_filename
-        print(f"File renamed to {self.conversation_file}")
-
     def save_transcript_to_file(self, text):
         """Saves the current transcript to the file."""
         filename = self.conversation_file if self.conversation_file else self.temp_file
@@ -158,6 +209,19 @@ class Transcriber:
                 f.write(text + "\n")
         except Exception as e:
             print(f"Error saving the transcript: {e}")
+
+    # ToDO move this to processor
+    def update_topic(self, new_topic):
+        """Updates the conversation topic and renames the log file."""
+        self.current_topic = new_topic
+        # Update the last_start_time_transcript to start tracking from this point onward
+        self.last_start_time_transcript = self.global_conversation
+
+        date_str = time.strftime("%Y-%m-%d")
+        new_filename = f"transcripts/{date_str}_{self.current_topic}.log"
+        os.rename(self.temp_file, new_filename)
+        self.conversation_file = new_filename
+        print(f"File renamed to {self.conversation_file}")
 
     def extract_and_format_topic(self, gpt_response):
         """
